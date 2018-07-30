@@ -71,8 +71,14 @@
 #include <dji_sdk/SetupCameraStream.h>
 #endif
 
+/// MAVCONN
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <mavconn/interface.h>
+
 //! SDK library
 #include <djiosdk/dji_vehicle.hpp>
+
 
 #define C_EARTH (double)6378137.0
 #define C_PI (double)3.141592653589793
@@ -248,6 +254,9 @@ private:
                                RecvContainer       recvFrame,
                                DJI::OSDK::UserData userData);
 
+  /// MAVCONN
+  void sendMavlinkMessage(const mavlink::Message& message);
+
 #ifdef ADVANCED_SENSING
   static void publish240pStereoImage(Vehicle*            vehicle,
                                      RecvContainer       recvFrame,
@@ -410,6 +419,13 @@ private:
   double current_gps_latitude, current_gps_longitude, current_gps_altitude;
   int current_gps_health;
   bool rtkSupport;
+
+  /// MAVCONN
+  int socket_fd_;
+  struct sockaddr_in my_addr_, remote_addr_;
+  socklen_t addr_len_;
+  // TODO make those ros params
+  uint8_t system_id_{1}, component_id_{1};
 };
 
 #endif // DJI_SDK_NODE_MAIN_H
