@@ -75,6 +75,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <mavconn/interface.h>
+#include <arpa/inet.h>
 
 //! SDK library
 #include <djiosdk/dji_vehicle.hpp>
@@ -426,6 +427,10 @@ private:
   socklen_t addr_len_;
   // TODO make those ros params
   uint8_t system_id_{1}, component_id_{1};
+
+  int mavlink_udp_port_local_{0}, mavlink_udp_port_remote_{0};
+  std::string mavlink_addr_;
+
 };
 
 #endif // DJI_SDK_NODE_MAIN_H

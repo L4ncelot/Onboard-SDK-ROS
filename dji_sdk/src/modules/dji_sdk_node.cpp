@@ -27,6 +27,9 @@ DJISDKNode::DJISDKNode(ros::NodeHandle& nh, ros::NodeHandle& nh_private)
     nh_private.param("gravity_const", gravity_const, 9.801);
     nh_private.param("align_time", align_time_with_FC, true);
     nh_private.param("use_broadcast", user_select_BC, false);
+    nh_private.param("mavlink_udp_port_local", mavlink_udp_port_local_, 14005);
+    nh_private.param("mavlink_udp_port_remote", mavlink_udp_port_remote_, 14007);
+    nh_private.param("mavlink_addr", mavlink_addr_, std::string("INADDR_ANY"));
 
     //! Default values for local Position
     local_pos_ref_latitude = local_pos_ref_longitude = local_pos_ref_altitude = 0;
@@ -334,6 +337,38 @@ DJISDKNode::initPublisher(ros::NodeHandle& nh) {
 #endif
 
 
+    /// MAVCONN
+    if ((socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        ROS_ERROR_STREAM("Socket creation failed.");
+        return -1;
+    }
+
+    memset(&my_addr_, 0, sizeof(my_addr_));
+    memcpy(&remote_addr_, &my_addr_, sizeof(my_addr_));
+    addr_len_ = sizeof(remote_addr_);
+
+    // address initialization
+    in_addr_t mavlink_addr = htonl(INADDR_ANY);
+
+    my_addr_.sin_family = AF_INET;
+    if (mavlink_addr_ != "INADDR_ANY"){
+        if ((mavlink_addr = inet_addr(mavlink_addr_.c_str())) == INADDR_NONE){
+            ROS_ERROR("Invalid mavlink address: %s", mavlink_addr_.c_str());
+        }
+    }
+    my_addr_.sin_addr.s_addr = mavlink_addr;
+    my_addr_.sin_port = htons(mavlink_udp_port_local_);
+
+    // binding socket with client address
+    if (bind(socket_fd_, (const struct sockaddr*) &my_addr_, sizeof(my_addr_)) < 0) {
+        ROS_ERROR_STREAM("Binding failed");
+        return -1;
+    }
+
+    // define remote address
+    remote_addr_.sin_port = AF_INET;
+    remote_addr_.sin_port = htons(mavlink_udp_port_remote_);
+
     if (telemetry_from_fc == USE_BROADCAST) {
         ACK::ErrorCode broadcast_set_freq_ack;
         ROS_INFO("Use legacy data broadcast to get telemetry data!");
@@ -379,31 +414,6 @@ DJISDKNode::initPublisher(ros::NodeHandle& nh) {
                 nh.advertise<geometry_msgs::Vector3Stamped>("dji_sdk/acceleration_ground_fused", 10);
 
         trigger_publisher = nh.advertise<sensor_msgs::TimeReference>("dji_sdk/trigger_time", 10);
-
-        /// MAVCONN
-        if ((socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-            ROS_ERROR_STREAM("Socket creation failed.");
-            return -1;
-        }
-
-        memset(&my_addr_, 0, sizeof(my_addr_));
-        memcpy(&remote_addr_, &my_addr_, sizeof(my_addr_));
-        addr_len_ = sizeof(remote_addr_);
-
-        // address initialization
-        my_addr_.sin_family = AF_INET;
-        my_addr_.sin_addr.s_addr = htonl(INADDR_ANY);
-        my_addr_.sin_port = htons(14005);
-
-        // binding socket with client address
-        if (bind(socket_fd_, (const struct sockaddr*) &my_addr_, sizeof(my_addr_)) < 0) {
-            ROS_ERROR_STREAM("Binding failed");
-            return -1;
-        }
-
-        // define remote address
-        remote_addr_.sin_port = AF_INET;
-        remote_addr_.sin_port = htons(14007);
 
         if (!initDataSubscribeFromFC()) {
             return false;

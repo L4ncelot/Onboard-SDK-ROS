@@ -1,4 +1,8 @@
 <launch>
+    <arg name="mavlink_addr" default="INADDR_ANY"/>
+    <arg name="mavlink_udp_port_local" default="14005"/>
+    <arg name="mavlink_udp_port_remote" default="14007"/>
+
     <node pkg="dji_sdk" type="dji_sdk_node" name="dji_sdk" output="screen">
         <!-- node parameters -->
         <param name="serial_name" type="string" value="/dev/ttyUSB0"/>
@@ -10,5 +14,9 @@
                value="93cb344b77d13ff599a2b21311ada0741a2504462328c8499cfd88dc6a9ffc1f"/>
         <param name="use_broadcast" type="bool" value="false"/>
         <param name="drone_version" value="M600"/>
+
+        <param name="mavlink_addr" value="$(arg mavlink_addr)"/>
+        <param name="mavlink_udp_port_local" value="$(arg mavlink_udp_port_local)"/>
+        <param name="mavlink_udp_port_remote" value="$(arg mavlink_udp_port_remote)"/>
     </node>
 </launch>

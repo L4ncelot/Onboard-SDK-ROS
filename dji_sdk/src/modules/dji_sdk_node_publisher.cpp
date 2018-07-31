@@ -316,6 +316,16 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
     p->current_gps_altitude = fused_altitude;
     p->gps_position_publisher.publish(gps_pos);
 
+    /// MAVCONN
+    mavlink::common::msg::GPS_RAW_INT fix{};
+    fix.time_usec = msg_time.toNSec() / 1000;
+    fix.lat = (int)(gps_pos.latitude * 1e7);
+    fix.lon = (int)(gps_pos.longitude * 1e7);
+    fix.alt = (int)(gps_pos.altitude * 1e7);
+    fix.satellites_visible = 15;
+    fix.fix_type = 3;
+    p->sendMavlinkMessage(fix);
+
     if (p->local_pos_ref_set) {
         geometry_msgs::PointStamped local_pos;
         local_pos.header.frame_id = "/local";
@@ -590,12 +600,24 @@ DJISDKNode::publish400HzData(Vehicle* vehicle, RecvContainer recvFrame,
 
     /// MAVCONN
     mavlink::common::msg::HEARTBEAT heartbeat;
-    heartbeat.type = int(mavlink::common::MAV_TYPE::ONBOARD_CONTROLLER);
+    heartbeat.type = int(mavlink::common::MAV_TYPE::GENERIC);
     heartbeat.autopilot = int(mavlink::common::MAV_AUTOPILOT::PX4);
-    heartbeat.base_mode = int(mavlink::common::MAV_MODE::MANUAL_ARMED);
-    heartbeat.custom_mode = 0;
+    heartbeat.base_mode = int(mavlink::common::MAV_MODE::AUTO_DISARMED);
+    heartbeat.custom_mode = int(mavlink::common::MAV_MODE::GUIDED_ARMED);
     heartbeat.system_status = int(mavlink::common::MAV_STATE::ACTIVE);
     p->sendMavlinkMessage(heartbeat);
+
+    // TODO conversion ENU -> NED
+    mavlink::common::msg::RAW_IMU imu_msg;
+    imu_msg.time_usec = msg_time.toNSec() / 1000;
+    imu_msg.xacc = synced_imu.linear_acceleration.x;
+    imu_msg.yacc = synced_imu.linear_acceleration.y;
+    imu_msg.zacc = synced_imu.linear_acceleration.z;
+
+    imu_msg.xgyro = synced_imu.angular_velocity.x;
+    imu_msg.ygyro = synced_imu.angular_velocity.y;
+    imu_msg.zgyro = synced_imu.angular_velocity.z;
+    p->sendMavlinkMessage(imu_msg);
 
     mavlink::common::msg::ATTITUDE_QUATERNION att_msg;
     att_msg.q1 = synced_imu.orientation.w;
