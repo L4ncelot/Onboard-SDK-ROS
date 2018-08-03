@@ -310,8 +310,8 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
     Telemetry::TypeMap<Telemetry::TOPIC_ALTITUDE_FUSIONED>::type fused_altitude =
             vehicle->subscribe->getValue<Telemetry::TOPIC_ALTITUDE_FUSIONED>();
 
-    if (!p->home_position_set_){
-        if (!p->setLocalPosRef()){
+    if (!p->home_position_set_) {
+        if (!p->setLocalPosRef()) {
             ROS_WARN_STREAM("failed to set local position reference ");
         }
     }
@@ -332,13 +332,14 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
     fix.time_usec = msg_time.toNSec() / 1000;
     fix.lat = (int) (gps_pos.latitude * 1e7);
     fix.lon = (int) (gps_pos.longitude * 1e7);
-    fix.alt = (int) (gps_pos.altitude * 1e7);
+    fix.alt = (int) (gps_pos.altitude * 1e3);
     fix.satellites_visible = fused_gps.visibleSatelliteNumber;
     fix.fix_type = p->current_gps_health;
     p->sendMavlinkMessage(fix);
 
+
+    geometry_msgs::PointStamped local_pos;
     if (p->local_pos_ref_set) {
-        geometry_msgs::PointStamped local_pos;
         local_pos.header.frame_id = "/local";
         local_pos.header.stamp = gps_pos.header.stamp;
         p->gpsConvertENU(local_pos.point.x, local_pos.point.y, gps_pos.longitude,
@@ -351,16 +352,10 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
         */
         p->local_position_publisher.publish(local_pos);
 
-        // TODO wrong transformation
-        auto local_pose_ned =
-                p->NED_ENU_AFFINE * Eigen::Vector3d(local_pos.point.x, local_pos.point.y, local_pos.point.z);
         mavlink::common::msg::LOCAL_POSITION_NED local_position_ned = {};
         local_position_ned.time_boot_ms = msg_time.toNSec() / 1000;
-//        local_position_ned.x = local_pose_ned.x();
-//        local_position_ned.y = local_pose_ned.y();
-//        local_position_ned.z = local_pose_ned.z();
-        local_position_ned.x = local_pos.point.x;
-        local_position_ned.y = local_pos.point.y;
+        local_position_ned.x = local_pos.point.y;
+        local_position_ned.y = local_pos.point.x;
         local_position_ned.z = local_pos.point.z;
         p->sendMavlinkMessage(local_position_ned);
 
@@ -371,9 +366,9 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
             p->home_position_.altitude = (int) (gps_pos.altitude * 1e7);
 
             // convert local coordinates to NED
-            p->home_position_.x = local_pose_ned.x();
-            p->home_position_.y = local_pose_ned.y();
-            p->home_position_.z = local_pose_ned.z();
+            p->home_position_.x = local_pos.point.y;
+            p->home_position_.y = local_pos.point.x;
+            p->home_position_.z = local_pos.point.z;
 
             p->home_position_set_ = true;
         } else {
@@ -410,6 +405,14 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
     v.vector.y = v_FC.data.x;
     v.vector.z = v_FC.data.z; //z sign is already U
     p->velocity_publisher.publish(v);
+
+    // TODO try if this works with copter as well
+    if (p->local_pos_ref_set) {
+        mavlink::common::msg::VFR_HUD hud = {};
+        hud.alt = local_pos.point.z;
+        hud.groundspeed = (float) (sqrt(pow(v.vector.x, 2) + pow(v.vector.y, 2)));
+        p->sendMavlinkMessage(hud);
+    }
 
     Telemetry::TypeMap<Telemetry::TOPIC_GPS_CONTROL_LEVEL>::type gps_ctrl_level =
             vehicle->subscribe->getValue<Telemetry::TOPIC_GPS_CONTROL_LEVEL>();
