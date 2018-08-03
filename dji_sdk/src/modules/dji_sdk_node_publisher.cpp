@@ -237,6 +237,12 @@ DJISDKNode::publish10HzData(Vehicle* vehicle, RecvContainer recvFrame,
     msg_battery_state.present = (battery_info.voltage != 0);
     p->battery_state_publisher.publish(msg_battery_state);
 
+    mavlink::common::msg::BATTERY_STATUS battery_status = {};
+    battery_status.battery_remaining = battery_info.percentage;
+    battery_status.current_battery = battery_info.current;
+    battery_status.voltages.at(0) = battery_info.voltage;
+    p->sendMavlinkMessage(battery_status);
+
     if (p->rtkSupport) {
         Telemetry::TypeMap<Telemetry::TOPIC_RTK_POSITION>::type rtk_telemetry_position =
                 vehicle->subscribe->getValue<Telemetry::TOPIC_RTK_POSITION>();
@@ -304,6 +310,11 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
     Telemetry::TypeMap<Telemetry::TOPIC_ALTITUDE_FUSIONED>::type fused_altitude =
             vehicle->subscribe->getValue<Telemetry::TOPIC_ALTITUDE_FUSIONED>();
 
+    if (!p->home_position_set_){
+        if (!p->setLocalPosRef()){
+            ROS_WARN_STREAM("failed to set local position reference ");
+        }
+    }
 
     sensor_msgs::NavSatFix gps_pos;
     gps_pos.header.frame_id = "/gps";
@@ -319,11 +330,11 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
     /// MAVCONN
     mavlink::common::msg::GPS_RAW_INT fix{};
     fix.time_usec = msg_time.toNSec() / 1000;
-    fix.lat = (int)(gps_pos.latitude * 1e7);
-    fix.lon = (int)(gps_pos.longitude * 1e7);
-    fix.alt = (int)(gps_pos.altitude * 1e7);
-    fix.satellites_visible = 15;
-    fix.fix_type = 3;
+    fix.lat = (int) (gps_pos.latitude * 1e7);
+    fix.lon = (int) (gps_pos.longitude * 1e7);
+    fix.alt = (int) (gps_pos.altitude * 1e7);
+    fix.satellites_visible = fused_gps.visibleSatelliteNumber;
+    fix.fix_type = p->current_gps_health;
     p->sendMavlinkMessage(fix);
 
     if (p->local_pos_ref_set) {
@@ -339,6 +350,35 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
         *       in ENU Frame
         */
         p->local_position_publisher.publish(local_pos);
+
+        // TODO wrong transformation
+        auto local_pose_ned =
+                p->NED_ENU_AFFINE * Eigen::Vector3d(local_pos.point.x, local_pos.point.y, local_pos.point.z);
+        mavlink::common::msg::LOCAL_POSITION_NED local_position_ned = {};
+        local_position_ned.time_boot_ms = msg_time.toNSec() / 1000;
+//        local_position_ned.x = local_pose_ned.x();
+//        local_position_ned.y = local_pose_ned.y();
+//        local_position_ned.z = local_pose_ned.z();
+        local_position_ned.x = local_pos.point.x;
+        local_position_ned.y = local_pos.point.y;
+        local_position_ned.z = local_pos.point.z;
+        p->sendMavlinkMessage(local_position_ned);
+
+        if (!p->home_position_set_) {
+            p->home_position_.time_usec = msg_time.toNSec() / 1000;
+            p->home_position_.latitude = (int) (gps_pos.latitude * 1e7);
+            p->home_position_.longitude = (int) (gps_pos.longitude * 1e7);
+            p->home_position_.altitude = (int) (gps_pos.altitude * 1e7);
+
+            // convert local coordinates to NED
+            p->home_position_.x = local_pose_ned.x();
+            p->home_position_.y = local_pose_ned.y();
+            p->home_position_.z = local_pose_ned.z();
+
+            p->home_position_set_ = true;
+        } else {
+            p->sendMavlinkMessage(p->home_position_);
+        }
     }
 
     Telemetry::TypeMap<Telemetry::TOPIC_HEIGHT_FUSION>::type fused_height =
@@ -596,18 +636,22 @@ DJISDKNode::publish400HzData(Vehicle* vehicle, RecvContainer recvFrame,
     synced_imu.orientation.y = q_FLU2ENU.getY();
     synced_imu.orientation.z = q_FLU2ENU.getZ();
 
+    // ENU -> NED transformation
+    Eigen::Quaterniond q_enu(synced_imu.orientation.w, synced_imu.orientation.x, synced_imu.orientation.y,
+                             synced_imu.orientation.z);
+    Eigen::Quaterniond q_ned = p->NED_ENU_Q * (q_enu * p->AIRCRAFT_BASELINK_Q);
+
     p->imu_publisher.publish(synced_imu);
 
     /// MAVCONN
     mavlink::common::msg::HEARTBEAT heartbeat;
-    heartbeat.type = int(mavlink::common::MAV_TYPE::GENERIC);
+    heartbeat.type = int(mavlink::common::MAV_TYPE::QUADROTOR);
     heartbeat.autopilot = int(mavlink::common::MAV_AUTOPILOT::PX4);
     heartbeat.base_mode = int(mavlink::common::MAV_MODE::AUTO_DISARMED);
     heartbeat.custom_mode = int(mavlink::common::MAV_MODE::GUIDED_ARMED);
     heartbeat.system_status = int(mavlink::common::MAV_STATE::ACTIVE);
     p->sendMavlinkMessage(heartbeat);
 
-    // TODO conversion ENU -> NED
     mavlink::common::msg::RAW_IMU imu_msg;
     imu_msg.time_usec = msg_time.toNSec() / 1000;
     imu_msg.xacc = synced_imu.linear_acceleration.x;
@@ -620,10 +664,11 @@ DJISDKNode::publish400HzData(Vehicle* vehicle, RecvContainer recvFrame,
     p->sendMavlinkMessage(imu_msg);
 
     mavlink::common::msg::ATTITUDE_QUATERNION att_msg;
-    att_msg.q1 = synced_imu.orientation.w;
-    att_msg.q2 = synced_imu.orientation.x;
-    att_msg.q3 = synced_imu.orientation.y;
-    att_msg.q4 = synced_imu.orientation.z;
+
+    att_msg.q1 = q_ned.w();
+    att_msg.q2 = q_ned.x();
+    att_msg.q3 = q_ned.y();
+    att_msg.q4 = q_ned.z();
     p->sendMavlinkMessage(att_msg);
 
     if (hardSync_FC.ts.flag == 1) {

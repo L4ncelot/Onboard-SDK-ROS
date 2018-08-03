@@ -17,7 +17,10 @@ DJISDKNode::DJISDKNode(ros::NodeHandle& nh, ros::NodeHandle& nh_private)
         : telemetry_from_fc(USE_BROADCAST),
           R_FLU2FRD(tf::Matrix3x3(1, 0, 0, 0, -1, 0, 0, 0, -1)),
           R_ENU2NED(tf::Matrix3x3(0, 1, 0, 1, 0, 0, 0, 0, -1)),
-          curr_align_state(UNALIGNED) {
+          curr_align_state(UNALIGNED),
+          AIRCRAFT_BASELINK_Q(quaternionFromRPY(M_PI, 0.0, 0.0)),
+          NED_ENU_Q(quaternionFromRPY(M_PI, 0.0, M_PI_2)),
+          NED_ENU_AFFINE(NED_ENU_Q){
     nh_private.param("serial_name", serial_device, std::string("/dev/ttyUSB0"));
     nh_private.param("baud_rate", baud_rate, 921600);
     nh_private.param("app_id", app_id, 123456);
@@ -57,7 +60,12 @@ DJISDKNode::DJISDKNode(ros::NodeHandle& nh, ros::NodeHandle& nh_private)
         if (!initPublisher(nh)) {
             ROS_ERROR("initPublisher failed");
         }
+
+        if (!initMavconn()){
+            ROS_ERROR_STREAM("Failed to init mavconn");
+        }
     }
+
 }
 
 DJISDKNode::~DJISDKNode() {
@@ -161,6 +169,8 @@ bool DJISDKNode::initServices(ros::NodeHandle& nh) {
     local_pos_ref_server = nh.advertiseService("dji_sdk/set_local_pos_ref", &DJISDKNode::setLocalPosRefCallback,
                                                this);
 
+    local_pos_ref_client = nh.serviceClient<dji_sdk::SetLocalPosRef>("dji_sdk/set_local_pos_ref");
+
 #ifdef ADVANCED_SENSING
     subscribe_stereo_240p_server  = nh.advertiseService("dji_sdk/stereo_240p_subscription",   &DJISDKNode::stereo240pSubscriptionCallback, this);
     subscribe_stereo_depth_server = nh.advertiseService("dji_sdk/stereo_depth_subscription",  &DJISDKNode::stereoDepthSubscriptionCallback,this);
@@ -175,6 +185,7 @@ bool DJISDKNode::initServices(ros::NodeHandle& nh) {
         mfio_set_value_server = nh.advertiseService("dji_sdk/mfio_set_value", &DJISDKNode::MFIOSetValueCallback,
                                                     this);
     }
+
     return true;
 }
 // clang-format on
@@ -336,38 +347,6 @@ DJISDKNode::initPublisher(ros::NodeHandle& nh) {
       nh.advertise<sensor_msgs::Image>("dji_sdk/fpv_camera_images", 10);
 #endif
 
-
-    /// MAVCONN
-    if ((socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        ROS_ERROR_STREAM("Socket creation failed.");
-        return -1;
-    }
-
-    memset(&my_addr_, 0, sizeof(my_addr_));
-    memcpy(&remote_addr_, &my_addr_, sizeof(my_addr_));
-    addr_len_ = sizeof(remote_addr_);
-
-    // address initialization
-    in_addr_t mavlink_addr = htonl(INADDR_ANY);
-
-    my_addr_.sin_family = AF_INET;
-    if (mavlink_addr_ != "INADDR_ANY"){
-        if ((mavlink_addr = inet_addr(mavlink_addr_.c_str())) == INADDR_NONE){
-            ROS_ERROR("Invalid mavlink address: %s", mavlink_addr_.c_str());
-        }
-    }
-    my_addr_.sin_addr.s_addr = mavlink_addr;
-    my_addr_.sin_port = htons(mavlink_udp_port_local_);
-
-    // binding socket with client address
-    if (bind(socket_fd_, (const struct sockaddr*) &my_addr_, sizeof(my_addr_)) < 0) {
-        ROS_ERROR_STREAM("Binding failed");
-        return -1;
-    }
-
-    // define remote address
-    remote_addr_.sin_port = AF_INET;
-    remote_addr_.sin_port = htons(mavlink_udp_port_remote_);
 
     if (telemetry_from_fc == USE_BROADCAST) {
         ACK::ErrorCode broadcast_set_freq_ack;
@@ -557,6 +536,41 @@ DJISDKNode::initDataSubscribeFromFC() {
     return true;
 }
 
+bool DJISDKNode::initMavconn() {
+    if ((socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        ROS_ERROR_STREAM("Socket creation failed.");
+        return false;
+    }
+
+    memset(&my_addr_, 0, sizeof(my_addr_));
+    memcpy(&remote_addr_, &my_addr_, sizeof(my_addr_));
+    addr_len_ = sizeof(remote_addr_);
+
+    // address initialization
+    in_addr_t mavlink_addr = htonl(INADDR_ANY);
+
+    my_addr_.sin_family = AF_INET;
+    if (mavlink_addr_ != "INADDR_ANY"){
+        if ((mavlink_addr = inet_addr(mavlink_addr_.c_str())) == INADDR_NONE){
+            ROS_ERROR("Invalid mavlink address: %s", mavlink_addr_.c_str());
+        }
+    }
+    my_addr_.sin_addr.s_addr = mavlink_addr;
+    my_addr_.sin_port = htons(mavlink_udp_port_local_);
+
+    // binding socket with client address
+    if (bind(socket_fd_, (const struct sockaddr*) &my_addr_, sizeof(my_addr_)) < 0) {
+        ROS_ERROR_STREAM("Binding failed");
+        return false;
+    }
+
+    // define remote address
+    remote_addr_.sin_port = AF_INET;
+    remote_addr_.sin_port = htons(mavlink_udp_port_remote_);
+
+    return true;
+}
+
 bool DJISDKNode::topic10hzStart(Telemetry::TopicName topicList10Hz[], int sizeOfArray) {
     int nTopic10Hz = sizeOfArray / sizeof(topicList10Hz[0]);
     if (vehicle->subscribe->initPackageFromTopicList(PACKAGE_ID_10HZ, nTopic10Hz,
@@ -665,6 +679,28 @@ void DJISDKNode::sendMavlinkMessage(const mavlink::Message& message) {
 
     // sending mavlink message
     if (sendto(socket_fd_, buf, buf_len, 0, (struct sockaddr*) &remote_addr_, addr_len_) < 0) {
-        ROS_WARN("Sending MAVLINK message failed.");
+        // TODO move this to debug domain
+//        ROS_WARN("Sending MAVLINK message failed.");
     }
+}
+
+Eigen::Quaterniond DJISDKNode::quaternionFromRPY(const double& roll, const double& pitch, const double& yaw) {
+    return quaternionFromRPY(Eigen::Vector3d(roll, pitch, yaw));
+}
+
+Eigen::Quaterniond DJISDKNode::quaternionFromRPY(const Eigen::Vector3d& rpy) {
+    // YPR - ZYX
+    return Eigen::Quaterniond(
+            Eigen::AngleAxisd(rpy.z(), Eigen::Vector3d::UnitZ()) *
+            Eigen::AngleAxisd(rpy.y(), Eigen::Vector3d::UnitY()) *
+            Eigen::AngleAxisd(rpy.x(), Eigen::Vector3d::UnitX())
+    );
+}
+
+bool DJISDKNode::setLocalPosRef() {
+    dji_sdk::SetLocalPosRef local_pose_setter;
+    if(!local_pos_ref_client.call(local_pose_setter)){
+        ROS_WARN_STREAM("Failed to call dji_sdk/set_local_pos_ref service");
+    }
+    return local_pose_setter.response.result;
 }

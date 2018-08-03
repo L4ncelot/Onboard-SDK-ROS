@@ -76,6 +76,8 @@
 #include <netinet/in.h>
 #include <mavconn/interface.h>
 #include <arpa/inet.h>
+#include <Eigen/Eigen>
+#include <Eigen/Geometry>
 
 //! SDK library
 #include <djiosdk/dji_vehicle.hpp>
@@ -85,6 +87,8 @@
 #define C_PI (double)3.141592653589793
 #define DEG2RAD(DEG) ((DEG) * ((C_PI) / (180.0)))
 #define RAD2DEG(RAD) ((RAD) * (180.0) / (C_PI))
+
+
 
 using namespace DJI::OSDK;
 
@@ -116,6 +120,7 @@ private:
   bool initPublisher(ros::NodeHandle& nh);
   bool initActions(ros::NodeHandle& nh);
   bool initDataSubscribeFromFC();
+  bool initMavconn();
   bool topic10hzStart(Telemetry::TopicName topicList10Hz[], int size);
   void cleanUpSubscribeFromFC();
   bool validateSerialDevice(LinuxSerialDevice* serialDevice);
@@ -258,6 +263,12 @@ private:
   /// MAVCONN
   void sendMavlinkMessage(const mavlink::Message& message);
 
+  Eigen::Quaterniond quaternionFromRPY(const double& roll, const double& pitch, const double& yaw);
+
+  Eigen::Quaterniond quaternionFromRPY(const Eigen::Vector3d& rpy);
+
+  bool setLocalPosRef();
+
 #ifdef ADVANCED_SENSING
   static void publish240pStereoImage(Vehicle*            vehicle,
                                      RecvContainer       recvFrame,
@@ -309,6 +320,8 @@ private:
   ros::ServiceServer query_version_server;
   //! Set Local position reference
   ros::ServiceServer local_pos_ref_server;
+
+  ros::ServiceClient local_pos_ref_client;
 
 #ifdef ADVANCED_SENSING
   //! stereo image service
@@ -430,6 +443,13 @@ private:
 
   int mavlink_udp_port_local_{0}, mavlink_udp_port_remote_{0};
   std::string mavlink_addr_;
+
+  Eigen::Quaterniond AIRCRAFT_BASELINK_Q;
+  Eigen::Quaterniond NED_ENU_Q;
+  Eigen::Affine3d NED_ENU_AFFINE;
+
+  bool home_position_set_{false};
+  mavlink::common::msg::HOME_POSITION home_position_;
 
 };
 
