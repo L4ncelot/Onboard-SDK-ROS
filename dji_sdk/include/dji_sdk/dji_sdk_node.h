@@ -78,6 +78,7 @@
 #include <arpa/inet.h>
 #include <Eigen/Eigen>
 #include <Eigen/Geometry>
+#include <poll.h>
 
 //! SDK library
 #include <djiosdk/dji_vehicle.hpp>
@@ -120,7 +121,9 @@ private:
   bool initPublisher(ros::NodeHandle& nh);
   bool initActions(ros::NodeHandle& nh);
   bool initDataSubscribeFromFC();
+  bool initMavlinkCommunication();
   bool initMavconn();
+  bool isValidIPAddress(const std::string& address);
   bool topic10hzStart(Telemetry::TopicName topicList10Hz[], int size);
   void cleanUpSubscribeFromFC();
   bool validateSerialDevice(LinuxSerialDevice* serialDevice);
@@ -262,6 +265,8 @@ private:
 
   /// MAVCONN
   void sendMavlinkMessage(const mavlink::Message& message);
+
+  void handleMavlinkMessage(const mavlink::mavlink_message_t *message, const mavconn::Framing framing);
 
   Eigen::Quaterniond quaternionFromRPY(const double& roll, const double& pitch, const double& yaw);
 
@@ -450,6 +455,10 @@ private:
 
   bool home_position_set_{false};
   mavlink::common::msg::HOME_POSITION home_position_;
+
+  mavconn::MAVConnInterface::Ptr fcu_link_;
+  std::string udp_url_prefix_{"udp://"};
+  bool mavconn_enabled_{false};
 
 };
 

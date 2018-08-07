@@ -2,6 +2,7 @@
     <arg name="mavlink_addr" default="INADDR_ANY"/>
     <arg name="mavlink_udp_port_local" default="14005"/>
     <arg name="mavlink_udp_port_remote" default="14007"/>
+    <arg name="mavconn_enabled" default="true"/>
 
     <node pkg="dji_sdk" type="dji_sdk_node" name="dji_sdk" output="screen">
         <!-- node parameters -->
@@ -18,5 +19,6 @@
         <param name="mavlink_addr" value="$(arg mavlink_addr)"/>
         <param name="mavlink_udp_port_local" value="$(arg mavlink_udp_port_local)"/>
         <param name="mavlink_udp_port_remote" value="$(arg mavlink_udp_port_remote)"/>
+        <param name="mavconn_enabled" value="$(arg mavconn_enabled)"/>
     </node>
 </launch>

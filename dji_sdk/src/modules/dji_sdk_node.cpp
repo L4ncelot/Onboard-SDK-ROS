@@ -20,7 +20,7 @@ DJISDKNode::DJISDKNode(ros::NodeHandle& nh, ros::NodeHandle& nh_private)
           curr_align_state(UNALIGNED),
           AIRCRAFT_BASELINK_Q(quaternionFromRPY(M_PI, 0.0, 0.0)),
           NED_ENU_Q(quaternionFromRPY(M_PI, 0.0, M_PI_2)),
-          NED_ENU_AFFINE(NED_ENU_Q){
+          NED_ENU_AFFINE(NED_ENU_Q) {
     nh_private.param("serial_name", serial_device, std::string("/dev/ttyUSB0"));
     nh_private.param("baud_rate", baud_rate, 921600);
     nh_private.param("app_id", app_id, 123456);
@@ -33,6 +33,7 @@ DJISDKNode::DJISDKNode(ros::NodeHandle& nh, ros::NodeHandle& nh_private)
     nh_private.param("mavlink_udp_port_local", mavlink_udp_port_local_, 14005);
     nh_private.param("mavlink_udp_port_remote", mavlink_udp_port_remote_, 14007);
     nh_private.param("mavlink_addr", mavlink_addr_, std::string("INADDR_ANY"));
+    nh_private.param("mavconn_enabled", mavconn_enabled_, false);
 
     //! Default values for local Position
     local_pos_ref_latitude = local_pos_ref_longitude = local_pos_ref_altitude = 0;
@@ -61,8 +62,11 @@ DJISDKNode::DJISDKNode(ros::NodeHandle& nh, ros::NodeHandle& nh_private)
             ROS_ERROR("initPublisher failed");
         }
 
-        if (!initMavconn()){
-            ROS_ERROR_STREAM("Failed to init mavconn");
+        if (mavconn_enabled_) {
+            if (!initMavconn()) {
+                ROS_ERROR_STREAM("Failed to init mavconn. Shutting down dji_sdk.");
+                ros::shutdown();
+            }
         }
     }
 
@@ -536,7 +540,7 @@ DJISDKNode::initDataSubscribeFromFC() {
     return true;
 }
 
-bool DJISDKNode::initMavconn() {
+bool DJISDKNode::initMavlinkCommunication() {
     if ((socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
         ROS_ERROR_STREAM("Socket creation failed.");
         return false;
@@ -550,8 +554,8 @@ bool DJISDKNode::initMavconn() {
     in_addr_t mavlink_addr = htonl(INADDR_ANY);
 
     my_addr_.sin_family = AF_INET;
-    if (mavlink_addr_ != "INADDR_ANY"){
-        if ((mavlink_addr = inet_addr(mavlink_addr_.c_str())) == INADDR_NONE){
+    if (mavlink_addr_ != "INADDR_ANY") {
+        if ((mavlink_addr = inet_addr(mavlink_addr_.c_str())) == INADDR_NONE) {
             ROS_ERROR("Invalid mavlink address: %s", mavlink_addr_.c_str());
         }
     }
@@ -569,6 +573,42 @@ bool DJISDKNode::initMavconn() {
     remote_addr_.sin_port = htons(mavlink_udp_port_remote_);
 
     return true;
+}
+
+bool DJISDKNode::initMavconn() {
+    // TODO check if IP address is valid
+    std::string fcu_url{""};
+    if (mavlink_addr_ == "INADDR_ANY") {
+        fcu_url = udp_url_prefix_ + "localhost:" + std::to_string(mavlink_udp_port_local_) + "@localhost:" +
+                  std::to_string(mavlink_udp_port_remote_);
+    } else {
+        if (!isValidIPAddress(mavlink_addr_)) {
+            ROS_WARN("Invalid IP address for mavlink interface: %s", mavlink_addr_.c_str());
+            return false;
+        }
+        fcu_url = udp_url_prefix_ + "localhost:" + std::to_string(mavlink_udp_port_local_) + "@" + mavlink_addr_ +
+                  ":" +
+                  std::to_string(mavlink_udp_port_remote_);
+    }
+
+    try {
+        fcu_link_ = mavconn::MAVConnInterface::open_url(fcu_url, system_id_, component_id_);
+    } catch (mavconn::DeviceError& exception) {
+        ROS_ERROR("fcu: %s", exception.what());
+        return false;
+    }
+
+    // set Mavlink protocol v2.0 as default
+    fcu_link_->set_protocol_version(mavconn::Protocol::V20);
+    fcu_link_->message_received_cb = std::bind(&DJISDKNode::handleMavlinkMessage, this, std::placeholders::_1,
+                                               std::placeholders::_2);
+
+    return true;
+}
+
+bool DJISDKNode::isValidIPAddress(const std::string& address) {
+    struct sockaddr_in socket;
+    return (inet_pton(AF_INET, address.c_str(), &socket.sin_addr) == 1);
 }
 
 bool DJISDKNode::topic10hzStart(Telemetry::TopicName topicList10Hz[], int sizeOfArray) {
@@ -699,7 +739,7 @@ Eigen::Quaterniond DJISDKNode::quaternionFromRPY(const Eigen::Vector3d& rpy) {
 
 bool DJISDKNode::setLocalPosRef() {
     dji_sdk::SetLocalPosRef local_pose_setter;
-    if(!local_pos_ref_client.call(local_pose_setter)){
+    if (!local_pos_ref_client.call(local_pose_setter)) {
         ROS_WARN_STREAM("Failed to call dji_sdk/set_local_pos_ref service");
     }
     return local_pose_setter.response.result;

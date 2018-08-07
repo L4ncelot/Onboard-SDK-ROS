@@ -241,7 +241,7 @@ DJISDKNode::publish10HzData(Vehicle* vehicle, RecvContainer recvFrame,
     battery_status.battery_remaining = battery_info.percentage;
     battery_status.current_battery = battery_info.current;
     battery_status.voltages.at(0) = battery_info.voltage;
-    p->sendMavlinkMessage(battery_status);
+    p->fcu_link_->send_message_ignore_drop(battery_status);
 
     if (p->rtkSupport) {
         Telemetry::TypeMap<Telemetry::TOPIC_RTK_POSITION>::type rtk_telemetry_position =
@@ -281,8 +281,6 @@ DJISDKNode::publish10HzData(Vehicle* vehicle, RecvContainer recvFrame,
         rtk_position_info.data = (int) rtk_telemetry_position_info;
         p->rtk_position_info_publisher.publish(rtk_position_info);
     }
-
-    return;
 }
 
 void
@@ -335,7 +333,7 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
     fix.alt = (int) (gps_pos.altitude * 1e3);
     fix.satellites_visible = fused_gps.visibleSatelliteNumber;
     fix.fix_type = p->current_gps_health;
-    p->sendMavlinkMessage(fix);
+    p->fcu_link_->send_message_ignore_drop(fix);
 
 
     geometry_msgs::PointStamped local_pos;
@@ -357,7 +355,7 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
         local_position_ned.x = local_pos.point.y;
         local_position_ned.y = local_pos.point.x;
         local_position_ned.z = local_pos.point.z;
-        p->sendMavlinkMessage(local_position_ned);
+        p->fcu_link_->send_message_ignore_drop(local_position_ned);
 
         if (!p->home_position_set_) {
             p->home_position_.time_usec = msg_time.toNSec() / 1000;
@@ -372,7 +370,7 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
 
             p->home_position_set_ = true;
         } else {
-            p->sendMavlinkMessage(p->home_position_);
+            p->fcu_link_->send_message_ignore_drop(p->home_position_);
         }
     }
 
@@ -411,7 +409,7 @@ DJISDKNode::publish50HzData(Vehicle* vehicle, RecvContainer recvFrame,
         mavlink::common::msg::VFR_HUD hud = {};
         hud.alt = local_pos.point.z;
         hud.groundspeed = (float) (sqrt(pow(v.vector.x, 2) + pow(v.vector.y, 2)));
-        p->sendMavlinkMessage(hud);
+        p->fcu_link_->send_message_ignore_drop(hud);
     }
 
     Telemetry::TypeMap<Telemetry::TOPIC_GPS_CONTROL_LEVEL>::type gps_ctrl_level =
@@ -581,6 +579,37 @@ DJISDKNode::publish100HzData(Vehicle* vehicle, RecvContainer recvFrame,
     acceleration.vector.y = a_FC.x;
     acceleration.vector.z = a_FC.z;  //z sign is already U
     p->acceleration_publisher.publish(acceleration);
+
+    /// old mavlink message receiver
+//    struct pollfd fds[1];
+//    memset(fds, 0, sizeof(fds));
+//    fds[0].fd = p->socket_fd_;
+//    fds[0].events = POLLIN;
+//
+//    int pret = ::poll(&fds[0], 1, 4);
+//
+//    if (pret == 0){
+//        return;
+//    }
+//
+////    ROS_INFO("poll: %d", pret);
+//
+//    if (fds[0].revents && POLLIN) {
+//        uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+//        int len = recvfrom(p->socket_fd_, buf, sizeof(buf), 0, (struct sockaddr*) &p->remote_addr_, &p->addr_len_);
+//
+//        if (len > 0) {
+//            mavlink::mavlink_message_t message;
+//            mavlink::mavlink_status_t udp_status = {};
+//
+//            for (int i = 0; i < len; i++) {
+//                if (mavlink::mavlink_parse_char(mavlink::MAVLINK_COMM_0, buf[i], &message, &udp_status)) {
+//                    ROS_INFO_STREAM("recv");
+//                    handleMavlinkMessage(&message);
+//                }
+//            }
+//        }
+//    }
 }
 
 void
@@ -653,7 +682,7 @@ DJISDKNode::publish400HzData(Vehicle* vehicle, RecvContainer recvFrame,
     heartbeat.base_mode = int(mavlink::common::MAV_MODE::AUTO_DISARMED);
     heartbeat.custom_mode = int(mavlink::common::MAV_MODE::GUIDED_ARMED);
     heartbeat.system_status = int(mavlink::common::MAV_STATE::ACTIVE);
-    p->sendMavlinkMessage(heartbeat);
+    p->fcu_link_->send_message_ignore_drop(heartbeat);
 
     mavlink::common::msg::RAW_IMU imu_msg;
     imu_msg.time_usec = msg_time.toNSec() / 1000;
@@ -664,7 +693,7 @@ DJISDKNode::publish400HzData(Vehicle* vehicle, RecvContainer recvFrame,
     imu_msg.xgyro = synced_imu.angular_velocity.x;
     imu_msg.ygyro = synced_imu.angular_velocity.y;
     imu_msg.zgyro = synced_imu.angular_velocity.z;
-    p->sendMavlinkMessage(imu_msg);
+    p->fcu_link_->send_message_ignore_drop(imu_msg);
 
     mavlink::common::msg::ATTITUDE_QUATERNION att_msg;
 
@@ -672,7 +701,7 @@ DJISDKNode::publish400HzData(Vehicle* vehicle, RecvContainer recvFrame,
     att_msg.q2 = q_ned.x();
     att_msg.q3 = q_ned.y();
     att_msg.q4 = q_ned.z();
-    p->sendMavlinkMessage(att_msg);
+    p->fcu_link_->send_message_ignore_drop(att_msg);
 
     if (hardSync_FC.ts.flag == 1) {
         sensor_msgs::TimeReference trigTime;
@@ -723,6 +752,16 @@ void DJISDKNode::alignRosTimeWithFlightController(ros::Time now_time, uint32_t t
         }
 
         return;
+    }
+}
+
+void DJISDKNode::handleMavlinkMessage(const mavlink::mavlink_message_t* message, const mavconn::Framing framing) {
+    switch (message->msgid){
+        case mavlink::common::msg::HEARTBEAT::MSG_ID:
+            ROS_INFO_STREAM("HEARTBEAT received");
+            break;
+        default:
+            break;
     }
 }
 
